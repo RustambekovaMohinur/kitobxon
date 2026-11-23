@@ -1,0 +1,140 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  SUPER_ADMIN
+  LIBRARIAN
+  STUDENT
+}
+
+enum BookStatus {
+  AVAILABLE
+  BORROWED
+  RESERVED
+}
+
+enum BorrowStatus {
+  BORROWED
+  RETURNED
+  OVERDUE
+}
+
+enum QueueStatus {
+  WAITING
+  NOTIFIED
+  FULFILLED
+  CANCELLED
+}
+
+model Library {
+  id            String         @id @default(uuid())
+  name          String
+  type          String         @default("Maktab") // "Maktab" yoki "Kutubxona"
+  location      String
+  status        String         @default("ACTIVE") // "ACTIVE" yoki "INACTIVE"
+  created_at    DateTime       @default(now())
+
+  users         User[]
+  books         Book[]
+  borrow_records BorrowRecord[]
+
+  @@map("libraries")
+}
+
+model User {
+  id                  String         @id @default(uuid())
+  library_id          String?
+  full_name           String
+  class_name          String?        // Masalan: "10-A sinf" yoki "Kitobxon"
+  login               String         @unique
+  password_hash       String
+  role                Role           @default(STUDENT)
+  telegram_chat_id    String?
+  telegram_link_code  String?        @unique
+  created_at          DateTime       @default(now())
+
+  library             Library?       @relation(fields: [library_id], references: [id], onDelete: Cascade)
+  borrow_records      BorrowRecord[] @relation("StudentBorrows")
+  queue_items         BookQueue[]    @relation("StudentQueue")
+  feedbacks           BookFeedback[] @relation("StudentFeedbacks")
+
+  @@map("users")
+}
+
+model Book {
+  id             String         @id @default(uuid())
+  library_id     String
+  code           String         // e.g., "KTB-001"
+  title          String
+  author         String
+  category       String         @default("Badiiy adabiyot")
+  status         BookStatus     @default(AVAILABLE)
+  created_at     DateTime       @default(now())
+
+  library        Library        @relation(fields: [library_id], references: [id], onDelete: Cascade)
+  borrow_records BorrowRecord[]
+  queue_items    BookQueue[]
+  feedbacks      BookFeedback[]
+
+  @@unique([library_id, code])
+  @@map("books")
+}
+
+model BorrowRecord {
+  id                      String        @id @default(uuid())
+  library_id              String
+  book_id                 String
+  student_id              String
+  class_name              String?
+  parent_telegram_chat_id String?
+  borrowed_at             DateTime      @default(now())
+  deadline_at             DateTime
+  returned_at             DateTime?
+  status                  BorrowStatus  @default(BORROWED)
+  overdue_notified_at     DateTime?
+  created_at              DateTime      @default(now())
+
+  library                 Library       @relation(fields: [library_id], references: [id], onDelete: Cascade)
+  book                    Book          @relation(fields: [book_id], references: [id], onDelete: Cascade)
+  student                 User          @relation("StudentBorrows", fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([library_id, status])
+  @@index([deadline_at, status])
+  @@map("borrow_records")
+}
+
+model BookQueue {
+  id          String      @id @default(uuid())
+  book_id     String
+  student_id  String
+  position    Int
+  status      QueueStatus @default(WAITING)
+  created_at  DateTime    @default(now())
+
+  book        Book        @relation(fields: [book_id], references: [id], onDelete: Cascade)
+  student     User        @relation("StudentQueue", fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([book_id, status])
+  @@map("book_queue")
+}
+
+model BookFeedback {
+  id          String   @id @default(uuid())
+  book_id     String
+  student_id  String
+  rating      Int      // 1 dan 5 gacha
+  comment     String
+  created_at  DateTime @default(now())
+
+  book        Book     @relation(fields: [book_id], references: [id], onDelete: Cascade)
+  student     User     @relation("StudentFeedbacks", fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([book_id])
+  @@map("book_feedbacks")
+}
