@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { sendTelegramMessage, getWebsiteLinkHtml } from '@/lib/telegram';
-import { BorrowStatus } from '@prisma/client';
+import { BorrowStatus, BookStatus } from '@prisma/client';
+import { recommendBooksWithGemini } from '@/lib/gemini';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
             `Sizning <b>Kitobxon</b> hisobingiz (${user.library?.name || 'Kutubxona'}) ushbu @kitobxon_rasmiy_bot rasmiy botiga muvaffaqiyatli bog'landi!\n\n` +
             `🔔 <i>Endi olingan kitoblar muddati, kechikish ogohlantirishlari va navbatdagi kitoblar haqida barcha xabarnomalar shu yerga keladi.</i>\n\n` +
             `🌐 ${webLink}\n\n` +
-            `Buyruqlar:\n/mybooks — Olingan kitoblar holatini ko'rish\n/help — Yordam`
+            `Buyruqlar:\n/mybooks — Olingan kitoblar holatini ko'rish\n/tavsiya — AI kitob tavsiyalarini olish\n/help — Yordam`
           );
           return NextResponse.json({ ok: true });
         } else {
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
         `Hisobingizni bog'lash uchun:\n` +
         `1. ${webLink}\n` +
         `2. "Mening kitoblarim" sahifasidagi @kitobxon_rasmiy_bot havolasini bosing yoki Chat ID raqamingizni kiriting.\n\n` +
-        `Buyruqlar:\n/mybooks — Sizdagi kitoblar ro'yxati\n/help — Yo'riqnoma`
+        `Buyruqlar:\n/mybooks — Sizdagi kitoblar ro'yxati\n/tavsiya [qiziqish] — AI kitob tavsiyasini olish\n/help — Yo'riqnoma`
       );
       return NextResponse.json({ ok: true });
     }
@@ -135,15 +136,83 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    // 3. /help buyrug'i
+    // 3. /tavsiya buyrug'i (AI Kitob Tavsiyasi)
+    if (text.startsWith('/tavsiya')) {
+      const parts = text.split(' ');
+      const userQuery = parts.slice(1).join(' ').trim();
+
+      const user = await prisma.user.findFirst({
+        where: { telegram_chat_id: chatId },
+      });
+
+      let libraryId = user?.library_id;
+      if (!libraryId) {
+        const activeLib = await prisma.library.findFirst({
+          where: { status: 'ACTIVE' },
+          orderBy: { created_at: 'asc' },
+        });
+        libraryId = activeLib?.id;
+      }
+
+      const availableBooks = libraryId
+        ? await prisma.book.findMany({
+            where: {
+              library_id: libraryId,
+              status: BookStatus.AVAILABLE,
+            },
+            select: { code: true, title: true, author: true, category: true },
+            take: 50,
+          })
+        : [];
+
+      if (availableBooks.length === 0) {
+        await sendTelegramMessage(
+          chatId,
+          `📚 Hozirda kutubxonada tavsiya qilish uchun bo'sh kitoblar mavjud emas.\n\n🌐 ${webLink}`
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      await sendTelegramMessage(
+        chatId,
+        `⏳ <i>AI kutubxonadagi mavjud kitoblar orasidan siz uchun eng yaxshilarini tanlamoqda...</i>`
+      );
+
+      const recs = await recommendBooksWithGemini(
+        userQuery || 'Menga eng sara va qiziqarli kitoblardan tavsiya bering',
+        availableBooks
+      );
+
+      let msg = `✨ <b>Kitobxon AI — Siz uchun kitob tavsiyalari:</b>\n\n`;
+      if (recs.length === 0) {
+        const first = availableBooks[0];
+        msg += `1. 📖 <b>${first.title}</b> — <i>${first.author}</i>\n`;
+        msg += `   🔖 Kodi: <code>${first.code}</code>\n`;
+        msg += `   💡 <i>Kutubxonamizdagi sara asarlardan biri.</i>\n\n`;
+      } else {
+        recs.forEach((r, idx) => {
+          msg += `${idx + 1}. 📖 <b>${r.title}</b> — <i>${r.author}</i>\n`;
+          msg += `   🔖 Kodi: <code>${r.code}</code>\n`;
+          msg += `   💡 <i>${r.pitch}</i>\n\n`;
+        });
+      }
+
+      msg += `Kitoblarni band qilish yoki batafsil ko'rish:\n🌐 ${webLink}`;
+
+      await sendTelegramMessage(chatId, msg);
+      return NextResponse.json({ ok: true });
+    }
+
+    // 4. /help buyrug'i
     if (text === '/help') {
       await sendTelegramMessage(
         chatId,
         `ℹ️ <b>Kitobxon (@kitobxon_rasmiy_bot) Boti Yordami:</b>\n\n` +
         `Ushbu bot orqali siz:\n` +
-        `• Olingan kitoblar qaytarish muddatini kuzatishingiz;\n` +
-        `• Qaytarish muddati yaqinlashganda va o'tib ketganda ogohlantirish xabarlarini olishingiz;\n` +
-        `• Siz kutayotgan kitob navbati kelganda zudlik bilan xabardor bo'lishingiz mumkin.\n\n` +
+        `• /mybooks — Olingan kitoblar qaytarish muddatini kuzatish\n` +
+        `• /tavsiya [qiziqish] — Kutubxonadagi mavjud kitoblardan AI tavsiyasini olish\n` +
+        `• Qaytarish muddati yaqinlashganda va o'tib ketganda ogohlantirish xabarlarini olish\n` +
+        `• Siz kutayotgan kitob navbati kelganda zudlik bilan xabardor bo'lish\n\n` +
         `🌐 ${webLink}\n\n` +
         `Sizning Chat ID: <code>${chatId}</code>`
       );

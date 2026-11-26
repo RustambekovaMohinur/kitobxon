@@ -63,9 +63,18 @@ export const issueBookSchema = z.object({
   deadline_days: z.coerce.number().min(1).max(180).default(14),
 });
 
-export const returnBookSchema = z.object({
-  borrow_record_id: z.string().min(1, "Qarz yozuvi tanlanishi shart"),
-});
+export const returnBookSchema = z
+  .object({
+    borrow_record_id: z.string().optional(),
+    book_code: z.string().optional(),
+  })
+  .refine(
+    (data) =>
+      Boolean((data.borrow_record_id && data.borrow_record_id.trim().length > 0) || (data.book_code && data.book_code.trim().length > 0)),
+    {
+      message: "Qarz yozuvi ID yoki Kitob kodi kiritilishi shart",
+    }
+  );
 
 export const feedbackSchema = z.object({
   book_id: z.string().min(1, "Kitob ID si talab qilinadi"),

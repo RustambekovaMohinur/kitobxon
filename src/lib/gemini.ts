@@ -197,3 +197,221 @@ function parseTextLocally(text: string): RawParsedBook[] {
 
   return books;
 }
+
+export interface BookRecommendation {
+  code: string;
+  title: string;
+  author: string;
+  pitch: string;
+}
+
+/**
+ * AI Book Recommender: Kutubxonadagi mavjud kitoblar asosida o'quvchiga tavsiya berish
+ */
+export async function recommendBooksWithGemini(
+  userInterest: string,
+  availableBooks: Array<{ code: string; title: string; author: string; category: string }>
+): Promise<BookRecommendation[]> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+
+  // Agar mavjud kitoblar bo'lmasa
+  if (!availableBooks || availableBooks.length === 0) {
+    return [];
+  }
+
+  // Zaxira lokal tavsiya funksiyasi
+  const localFallback = (): BookRecommendation[] => {
+    const q = (userInterest || '').toLowerCase();
+    const matched = availableBooks.filter(
+      (b) =>
+        b.title.toLowerCase().includes(q) ||
+        b.author.toLowerCase().includes(q) ||
+        b.category.toLowerCase().includes(q)
+    );
+    const chosen = matched.length > 0 ? matched.slice(0, 3) : availableBooks.slice(0, 3);
+    return chosen.map((b) => ({
+      code: b.code,
+      title: b.title,
+      author: b.author,
+      pitch: `Sizning qiziqishingizga mos keladigan, kutubxonamizdagi eng sara ${b.category.toLowerCase()} namunasi.`,
+    }));
+  };
+
+  if (!apiKey || apiKey.includes('your_gemini_api_key_here')) {
+    return localFallback();
+  }
+
+  const catalogText = availableBooks
+    .slice(0, 60)
+    .map((b, i) => `${i + 1}. [Kod: ${b.code}] "${b.title}" - ${b.author} (Kategoriya: ${b.category})`)
+    .join('\n');
+
+  const promptText = `
+Siz "Kitobxon" maktab va jamoat kutubxonasi platformasining zukko AI maslahatchisisiz.
+Quyida bizning kutubxonamizda ayni paytda MAVJUD (bo'sh) kitoblar ro'yxati berilgan:
+${catalogText}
+
+Foydalanuvchining so'rovi yoki qiziqishi: "${userInterest || 'Menga eng qiziqarli kitoblardan tavsiya bering'}"
+
+Qat'iy qoidalar:
+1. FAQAT yuqoridagi ro'yxatda mavjud kitoblardan 2 tadan 4 tagacha eng mos keladiganini tanlang.
+2. Ro'yxatda yo'q kitobni aslo to'qimang yoki o'ylab topmang! Kod va sarlavhalar ro'yxatdagi bilan bir xil bo'lishi shart.
+3. Har bir kitob uchun o'zbek tilida 1-2 jumlalik samimiy, o'quvchini mutolaaga chorlovchi sabab (pitch) yozing.
+`;
+
+  const payload = {
+    contents: [{ parts: [{ text: promptText }] }],
+    generationConfig: {
+      temperature: 0.3,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            code: { type: 'string' },
+            title: { type: 'string' },
+            author: { type: 'string' },
+            pitch: { type: 'string' },
+          },
+          required: ['code', 'title', 'author', 'pitch'],
+        },
+      },
+    },
+  };
+
+  for (const model of CANDIDATE_MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if (response.status === 429) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+
+        if (!response.ok) {
+          break;
+        }
+
+        const resData = await response.json();
+        const rawText = resData.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawText) {
+          const parsed = JSON.parse(rawText);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // Faqat ro'yxatda bor kitoblarni qoldiramiz
+            const valid = parsed
+              .filter((item) => availableBooks.some((ab) => ab.code.toUpperCase() === String(item.code).toUpperCase()))
+              .map((item) => ({
+                code: String(item.code).trim().toUpperCase(),
+                title: String(item.title).trim(),
+                author: String(item.author).trim(),
+                pitch: String(item.pitch).trim(),
+              }));
+
+            if (valid.length > 0) {
+              return valid;
+            }
+          }
+        }
+      } catch (e) {
+        // Continue to next attempt/model
+      }
+    }
+  }
+
+  return localFallback();
+}
+
+export interface RecognizedCoverResult {
+  title: string;
+  author: string;
+  category: string;
+}
+
+/**
+ * AI Cover Photo Recognition (Gemini Vision)
+ */
+export async function recognizeBookCoverWithGemini(fileInlineData: {
+  mimeType: string;
+  data: string; // base64
+}): Promise<RecognizedCoverResult> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || apiKey.includes('your_gemini_api_key_here')) {
+    throw new Error("GEMINI_API_KEY sozlanmagan.");
+  }
+
+  const promptText = `
+Ushbu fotosuratdagi kitob muqovasini aniq tahlil qiling:
+1. title: Kitobning to'liq va toza nomi.
+2. author: Muallifning ismi-familiyasi. Agar topilmasa yoki ko'rinmasa, "Noma'lum" deb yozing.
+3. category: Kitob yo'nalishi (masalan: "Badiiy adabiyot", "Darslik va o'quv qo'llanma", "Ilmiy-ommabop", "Bolalar adabiyoti", "Xorijiy adabiyot", "Diniy-ma'rifiy", yoki "Boshqa").
+`;
+
+  const payload = {
+    contents: [
+      {
+        parts: [
+          { inlineData: fileInlineData },
+          { text: promptText },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          author: { type: 'string' },
+          category: { type: 'string' },
+        },
+        required: ['title', 'author', 'category'],
+      },
+    },
+  };
+
+  let lastError: any = null;
+
+  for (const model of CANDIDATE_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.status === 429) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Vision model xatosi (${response.status}): ${errText.slice(0, 100)}`);
+      }
+
+      const resData = await response.json();
+      const rawText = resData.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (rawText) {
+        const parsed = JSON.parse(rawText);
+        return {
+          title: String(parsed.title || "Noma'lum kitob").trim(),
+          author: String(parsed.author || "Noma'lum").trim(),
+          category: String(parsed.category || "Badiiy adabiyot").trim(),
+        };
+      }
+    } catch (e: any) {
+      lastError = e;
+    }
+  }
+
+  throw lastError || new Error("Muqovani aniqlab bo'lmadi");
+}

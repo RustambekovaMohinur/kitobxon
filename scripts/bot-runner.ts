@@ -39,7 +39,8 @@ loadEnv();
 
 import { Telegraf } from 'telegraf';
 import prisma from '../src/lib/db';
-import { BorrowStatus } from '@prisma/client';
+import { BorrowStatus, BookStatus } from '@prisma/client';
+import { recommendBooksWithGemini } from '../src/lib/gemini';
 
 function getWebsiteLinkHtml(): string {
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL)?.trim();
@@ -192,6 +193,74 @@ bot.command('mybooks', async (ctx) => {
   }
 });
 
+// /tavsiya komandasi (AI Kitob Maslahatchisi)
+bot.command('tavsiya', async (ctx) => {
+  try {
+    const chatId = String(ctx.chat.id);
+    const text = (ctx.message as any)?.text || '';
+    const parts = text.split(' ');
+    const userQuery = parts.slice(1).join(' ').trim();
+    const webLink = getWebsiteLinkHtml();
+
+    const user = await prisma.user.findFirst({
+      where: { telegram_chat_id: chatId },
+    });
+
+    let libraryId = user?.library_id;
+    if (!libraryId) {
+      const activeLib = await prisma.library.findFirst({
+        where: { status: 'ACTIVE' },
+        orderBy: { created_at: 'asc' },
+      });
+      libraryId = activeLib?.id;
+    }
+
+    const availableBooks = libraryId
+      ? await prisma.book.findMany({
+          where: {
+            library_id: libraryId,
+            status: BookStatus.AVAILABLE,
+          },
+          select: { code: true, title: true, author: true, category: true },
+          take: 50,
+        })
+      : [];
+
+    if (availableBooks.length === 0) {
+      return await ctx.replyWithHTML(
+        `📚 Hozirda kutubxonada tavsiya qilish uchun bo'sh kitoblar mavjud emas.\n\n🌐 ${webLink}`
+      );
+    }
+
+    await ctx.replyWithHTML(`⏳ <i>AI kutubxonadagi mavjud kitoblar orasidan siz uchun eng yaxshilarini tanlamoqda...</i>`);
+
+    const recs = await recommendBooksWithGemini(
+      userQuery || 'Menga eng sara va qiziqarli kitoblardan tavsiya bering',
+      availableBooks
+    );
+
+    let msg = `✨ <b>Kitobxon AI — Siz uchun kitob tavsiyalari:</b>\n\n`;
+    if (recs.length === 0) {
+      const first = availableBooks[0];
+      msg += `1. 📖 <b>${first.title}</b> — <i>${first.author}</i>\n`;
+      msg += `   🔖 Kodi: <code>${first.code}</code>\n`;
+      msg += `   💡 <i>Kutubxonamizdagi sara asarlardan biri.</i>\n\n`;
+    } else {
+      recs.forEach((r, idx) => {
+        msg += `${idx + 1}. 📖 <b>${r.title}</b> — <i>${r.author}</i>\n`;
+        msg += `   🔖 Kodi: <code>${r.code}</code>\n`;
+        msg += `   💡 <i>${r.pitch}</i>\n\n`;
+      });
+    }
+
+    msg += `Kitoblarni band qilish yoki batafsil ko'rish:\n🌐 ${webLink}`;
+    return await ctx.replyWithHTML(msg);
+  } catch (err: any) {
+    console.error('Xatolik /tavsiya da:', err);
+    await ctx.reply('AI tavsiyasini tayyorlashda xatolik yuz berdi.');
+  }
+});
+
 // /help komandasi
 bot.command('help', async (ctx) => {
   try {
@@ -199,9 +268,10 @@ bot.command('help', async (ctx) => {
     return await ctx.replyWithHTML(
       `ℹ️ <b>Kitobxon (@kitobxon_rasmiy_bot) Boti Yordami:</b>\n\n` +
       `Ushbu bot orqali siz:\n` +
-      `• Olingan kitoblar qaytarish muddatini kuzatishingiz;\n` +
-      `• Qaytarish muddati yaqinlashganda va o'tib ketganda ogohlantirish xabarlarini olishingiz;\n` +
-      `• Siz kutayotgan kitob navbati kelganda zudlik bilan xabardor bo'lishingiz mumkin.\n\n` +
+      `• /mybooks — Olingan kitoblar qaytarish muddatini kuzatish\n` +
+      `• /tavsiya [qiziqish] — Kutubxonadagi mavjud kitoblardan AI tavsiyasini olish\n` +
+      `• Qaytarish muddati yaqinlashganda va o'tib ketganda ogohlantirish xabarlarini olish\n` +
+      `• Siz kutayotgan kitob navbati kelganda zudlik bilan xabardor bo'lish\n\n` +
       `🌐 ${webLink}\n\n` +
       `Sizning Chat ID: <code>${ctx.chat.id}</code>`
     );

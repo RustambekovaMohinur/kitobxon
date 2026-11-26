@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Sparkles,
 } from 'lucide-react';
+import AiBookRecommenderModal from '@/components/AiBookRecommenderModal';
 
 interface BookItem {
   id: string;
@@ -56,6 +57,7 @@ export default function BooksCatalogPage() {
   // Action status modal/toast
   const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [aiRecommenderOpen, setAiRecommenderOpen] = useState(false);
 
   const categories = [
     'ALL',
@@ -168,6 +170,14 @@ export default function BooksCatalogPage() {
             Maktab va jamoat kutubxonalari fondidagi kitoblarni qidiring, band holatini kuzating va navbatga yoziling
           </p>
         </div>
+
+        <button
+          onClick={() => setAiRecommenderOpen(true)}
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-semibold text-sm shadow-md shadow-indigo-500/20 hover:shadow-indigo-500/35 transition-all self-start md:self-auto cursor-pointer"
+        >
+          <Sparkles className="w-4 h-4 text-amber-300" />
+          <span>✨ AI Kitob Maslahatchisi</span>
+        </button>
       </div>
 
       {/* Action Notification Toast */}
@@ -453,6 +463,18 @@ export default function BooksCatalogPage() {
           })}
         </div>
       )}
+
+      {/* AI Book Recommender Modal */}
+      <AiBookRecommenderModal
+        isOpen={aiRecommenderOpen}
+        onClose={() => setAiRecommenderOpen(false)}
+        libraryId={selectedLibrary || (currentUser as any)?.library_id}
+        onSelectBook={(code) => {
+          setSearch(code);
+          setSelectedCategory('ALL');
+          setSelectedStatus('ALL');
+        }}
+      />
     </div>
   );
 }
